@@ -16,11 +16,12 @@ const { sendSuccess } = require('./utils/response');
 const { errorHandler, notFoundHandler } = require('./middlewares/error.middleware');
 
 // ── Route modules ─────────────────────────────────────────────────────────────
-const authRoutes = require('./modules/auth/auth.routes');
-const ordersRoutes = require('./modules/orders/orders.routes');
-const tenantsRoutes = require('./modules/tenants/tenants.routes');
-const callsRoutes = require('./modules/calls/calls.routes');
-const emailRoutes = require('./modules/email/email.routes');
+const authRoutes     = require('./modules/auth/auth.routes');
+const ordersRoutes   = require('./modules/orders/orders.routes');
+const tenantsRoutes  = require('./modules/tenants/tenants.routes');
+const callsRoutes    = require('./modules/calls/calls.routes');
+const emailRoutes    = require('./modules/email/email.routes');
+const settingsRoutes = require('./modules/settings/settings.routes');
 const { startEmailPollingCron, stopEmailPollingCron } = require('./modules/email/gmailFetcher.service');
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -113,11 +114,12 @@ app.get('/api/v1/health', (req, res) => {
 });
 
 // ── API routes ────────────────────────────────────────────────────────────────
-app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/orders', ordersRoutes);
-app.use('/api/v1/tenants', tenantsRoutes);
-app.use('/api/v1/calls', callsRoutes);
-app.use('/api/v1/email', emailRoutes);
+app.use('/api/v1/auth',     authRoutes);
+app.use('/api/v1/orders',   ordersRoutes);
+app.use('/api/v1/tenants',  tenantsRoutes);
+app.use('/api/v1/calls',    callsRoutes);
+app.use('/api/v1/email',    emailRoutes);
+app.use('/api/v1/settings', settingsRoutes);
 
 // ── Root redirect ─────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {

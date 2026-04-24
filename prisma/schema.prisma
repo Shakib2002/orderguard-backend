@@ -55,11 +55,12 @@ model Tenant {
   createdAt      DateTime @default(now())
 
   // Relations
-  users        User[]
-  orders       Order[]
-  calls        Call[]
-  emailConfigs EmailConfig[]
-  rawEmails    RawEmail[]
+  users         User[]
+  orders        Order[]
+  calls         Call[]
+  emailConfigs  EmailConfig[]
+  rawEmails     RawEmail[]
+  callSettings  CallSettings?
 
   @@map("tenants")
 }
@@ -182,4 +183,21 @@ model RawEmail {
   @@unique([tenantId, messageId]) // prevent double-processing
   @@index([tenantId])
   @@map("raw_emails")
+}
+// ── CallSettings — per-tenant call/SMS preferences ──────────────────────────
+model CallSettings {
+  id                String   @id @default(cuid())
+  tenantId          String   @unique
+  autoCallEnabled   Boolean  @default(false)
+  smsEnabled        Boolean  @default(true)
+  retryAttempts     Int      @default(2)
+  callWindowStart   String   @default("09:00")
+  callWindowEnd     String   @default("21:00")
+  delayMinutes      Int      @default(5)
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("call_settings")
 }
