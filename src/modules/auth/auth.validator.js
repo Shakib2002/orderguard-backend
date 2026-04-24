@@ -40,8 +40,8 @@ const registerSchema = Joi.object({
   fullName: Joi.string().trim().min(2).max(100).required().messages({
     'any.required': 'Full name is required',
   }),
-  phone: joiPhone.required().messages({
-    'any.required': 'Phone number is required',
+  phone: joiPhone.optional().allow('', null).messages({
+    'string.pattern.base': 'Enter a valid Bangladesh phone number (e.g. 01712345678)',
   }),
 });
 
