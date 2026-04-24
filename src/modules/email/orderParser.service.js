@@ -160,13 +160,106 @@ class RegexStrategy {
   }
 }
 
-// ── Strategy: AI stub (Phase 2) ───────────────────────────────────────────────
+// ── Strategy: AI — Gemini 2.5 Flash via OpenAI-compatible API ────────────────
 class AIStrategy {
-  async parse(_rawEmail) {
-    // TODO Phase 2: Call Claude/GPT API here — same output contract as RegexStrategy
-    throw new Error('AI parsing not yet enabled. Set PARSER_STRATEGY=regex in env.');
+  constructor() {
+    // ModelRouter expects 'sk_...' format — strip 'api-' prefix if present
+    const rawKey = process.env.AI_API_KEY || '';
+    this._apiKey  = rawKey.replace(/^api-/, '');
+    this._baseUrl = (process.env.AI_BASE_URL || 'https://api.modelrouter.app/v1').replace(/\/$/, '');
+    this._model   = process.env.AI_MODEL    || 'google/gemini-2.5-flash';
+    this._regex   = new RegexStrategy(); // fallback
+  }
+
+  _buildPrompt(rawEmail) {
+    const { subject = '', bodyText = '', fromAddress = '' } = rawEmail;
+    return `You are an order data extraction assistant for a Bangladeshi e-commerce system.
+
+Extract order information from the email below and return a JSON object with EXACTLY these fields:
+{
+  "externalId": string or null,       // order number / ID
+  "customerName": string or null,
+  "customerPhone": string or null,    // Bangladesh format: 01XXXXXXXXX (11 digits)
+  "address": string or null,          // delivery address
+  "productName": string or null,
+  "quantity": number or null,
+  "totalPrice": number or null        // numeric only, BDT
+}
+
+Rules:
+- customerPhone MUST be in format 01XXXXXXXXX (11 digits). Remove +880 or 880 prefix.
+- Return null for any field you cannot find.
+- Return ONLY valid JSON, no markdown, no explanation.
+
+EMAIL:
+From: ${fromAddress}
+Subject: ${subject}
+Body:
+${bodyText.slice(0, 3000)}`;
+  }
+
+  async parse(rawEmail) {
+    if (!this._apiKey) {
+      throw new Error('AI_API_KEY not set in environment. Set it in Render env vars.');
+    }
+
+    try {
+      const response = await fetch(`${this._baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this._apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this._model,
+          messages: [{ role: 'user', content: this._buildPrompt(rawEmail) }],
+          response_format: { type: 'json_object' },
+          temperature: 0.1,
+          max_tokens: 512,
+        }),
+        signal: AbortSignal.timeout(15_000), // 15s timeout
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`AI API error ${response.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) throw new Error('AI returned empty response');
+
+      const extracted = JSON.parse(content);
+
+      // Normalize phone
+      const phone = normalizePhone(extracted.customerPhone);
+
+      // Calculate confidence (AI always gets 0.95 if phone found, else 0.80)
+      const confidence = phone ? 0.95 : 0.80;
+
+      return {
+        externalId:    extracted.externalId    || null,
+        customerName:  extracted.customerName  || null,
+        customerPhone: phone,
+        address:       extracted.address       || null,
+        productName:   extracted.productName   || null,
+        quantity:      Number(extracted.quantity)   || null,
+        totalPrice:    Number(extracted.totalPrice) || null,
+        currency:      'BDT',
+        confidence,
+        parseMethod:   'ai',
+        rawFields:     extracted,
+      };
+    } catch (err) {
+      logger.error('AIStrategy: failed, falling back to regex', { error: err.message });
+      // Graceful fallback to regex so polling never breaks
+      const fallback = this._regex.parse(rawEmail);
+      fallback.parseMethod = 'regex-fallback';
+      return fallback;
+    }
   }
 }
+
 
 // ── OrderParserService — Strategy Pattern ─────────────────────────────────────
 class OrderParserService {
