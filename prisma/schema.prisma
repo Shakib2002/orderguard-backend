@@ -1,0 +1,161 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum PlanType {
+  FREE
+  BASIC
+  PRO
+}
+
+enum Role {
+  SELLER
+  SUPER_ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  FAKE
+  DELIVERED
+}
+
+enum CallStatus {
+  NOT_CALLED
+  QUEUED
+  CALLING
+  CONFIRMED
+  REJECTED
+  NO_RESPONSE
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id             String   @id @default(cuid())
+  businessName   String
+  slug           String   @unique
+  inboundEmail   String   @unique // their forwarding-to address
+  whatsappNumber String?
+  gmailAddress   String? // seller's Gmail to monitor
+  planType       PlanType @default(FREE)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  // Relations
+  users        User[]
+  orders       Order[]
+  calls        Call[]
+  emailConfigs EmailConfig[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  role         Role     @default(SELLER)
+  fcmToken     String?
+  createdAt    DateTime @default(now())
+
+  // Relations
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  tenantId      String
+  externalId    String? // order ID from e-commerce site
+  customerName  String
+  customerPhone String
+  address       String?
+  productName   String
+  quantity      Int         @default(1)
+  totalPrice    Decimal     @db.Decimal(10, 2)
+  status        OrderStatus @default(PENDING)
+  callStatus    CallStatus  @default(NOT_CALLED)
+  rawEmailId    String? // reference to source email
+  notes         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  calls  Call[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, callStatus])
+  @@index([customerPhone])
+  @@map("orders")
+}
+
+model Call {
+  id        String  @id @default(cuid())
+  tenantId  String
+  orderId   String
+  attemptNo Int     @default(1)
+  callSid   String? // Twilio SID (null for manual)
+  isManual  Boolean @default(true)
+  status    String // initiated/ringing/completed/failed
+  keypress  String? // 1=confirm, 2=cancel, null=no response
+  duration  Int? // seconds
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@map("calls")
+}
+
+model EmailConfig {
+  id               String    @id @default(cuid())
+  tenantId         String    @unique
+  gmailAddress     String
+  gmailAppPassword String // encrypted
+  lastCheckedAt    DateTime?
+  isActive         Boolean   @default(true)
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("email_configs")
+}
+
+// ── RefreshToken — stored hashed for token rotation & logout invalidation ────
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique // SHA-256 hash of the raw refresh token
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
