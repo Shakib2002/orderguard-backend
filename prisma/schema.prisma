@@ -115,11 +115,13 @@ model Call {
   tenantId  String
   orderId   String
   attemptNo Int     @default(1)
+  type      String  @default("MANUAL_LOG") // MANUAL_LOG | SMS | IVR
   callSid   String? // Twilio SID (null for manual)
   isManual  Boolean @default(true)
-  status    String // initiated/ringing/completed/failed
+  status    String  // initiated|ringing|completed|failed|no-answer|sms_sent|sms_replied
   keypress  String? // 1=confirm, 2=cancel, null=no response
-  duration  Int? // seconds
+  duration  Int?    // seconds
+  notes     String? @db.Text
 
   createdAt DateTime @default(now())
 
