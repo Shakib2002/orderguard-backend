@@ -23,6 +23,7 @@ const callsRoutes    = require('./modules/calls/calls.routes');
 const emailRoutes    = require('./modules/email/email.routes');
 const settingsRoutes = require('./modules/settings/settings.routes');
 const { startEmailPollingCron, stopEmailPollingCron } = require('./modules/email/gmailFetcher.service');
+const { fcmService } = require('./modules/notifications/fcm.service');
 
 // ── App ───────────────────────────────────────────────────────────────────────
 const app = express();
@@ -146,6 +147,9 @@ const startServer = async () => {
 
     // ── Start Gmail polling cron ──────────────────────────────────────────────
     startEmailPollingCron();
+
+    // ── Start FCM daily summary cron (9PM BDT) ───────────────────────────────
+    fcmService.startDailySummaryCron();
 
     // ── Graceful shutdown ─────────────────────────────────────────────────────
     const gracefulShutdown = async (signal) => {

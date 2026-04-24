@@ -3,8 +3,10 @@
 const EventEmitter = require('events');
 const { getPrismaClient } = require('../../config/database');
 const logger = require('../../utils/logger');
+// FCM imported lazily to avoid circular dep during init
+const getFcm = () => require('../notifications/fcm.service');
 
-// ── Order events (future webhooks/FCM) ────────────────────────────────────────
+// ── Order events (future webhooks / FCM) ──────────────────────────────────────
 const orderEvents = new EventEmitter();
 
 // ── Subject keyword filter ────────────────────────────────────────────────────
@@ -320,6 +322,18 @@ class OrderParserService {
       });
 
       orderEvents.emit('order.created', { order, parsed, tenantId });
+
+      // FCM push notification — new order alert
+      try {
+        const { fcmService, NOTIFICATION_TYPES } = getFcm();
+        fcmService.sendToTenant(tenantId, NOTIFICATION_TYPES.NEW_ORDER, {
+          orderId:      order.id,
+          customerName: order.customerName,
+          productName:  order.productName,
+          price:        String(order.totalPrice),
+          tenantId,
+        }).catch(() => {}); // non-blocking
+      } catch (_) {}
 
       logger.info('orderParser: order created', {
         tenantId, orderId: order.id,

@@ -21,6 +21,7 @@ const { AppError }         = require('../../middlewares/error.middleware');
 const { HTTP, MAX_CALL_ATTEMPTS } = require('../../config/constants');
 const logger               = require('../../utils/logger');
 const { orderEvents }      = require('../email/orderParser.service');
+const { fcmService, NOTIFICATION_TYPES } = require('../notifications/fcm.service');
 
 // ── Twilio client (lazy init) ─────────────────────────────────────────────────
 let _twilioClient = null;
@@ -350,15 +351,28 @@ const smsWebhook = async (req, res, next) => {
       }),
     ]);
 
-    // Emit for FCM (Flutter push notification)
-    const emoji = reply === 'YES' ? '✅' : '❌';
+    // FCM push to seller + emit event
+    const emoji     = reply === 'YES' ? '✅' : '❌';
+    const pushBody  = `${emoji} অর্ডার #${order.externalId || order.id.slice(-6)} কাস্টমার ${reply === 'YES' ? 'কনফার্ম' : 'বাতিল'} করেছে`;
+
+    // FCM notification to tenant
+    fcmService.sendToTenant(
+      order.tenantId,
+      reply === 'YES' ? NOTIFICATION_TYPES.ORDER_CONFIRMED : NOTIFICATION_TYPES.ORDER_FAKE,
+      {
+        orderId:      order.id,
+        customerName: order.customerName,
+        reply,
+        tenantId:     order.tenantId,
+      }
+    ).catch(() => {});
+
     orderEvents.emit('order.sms_reply', {
       tenantId:  order.tenantId,
       orderId:   order.id,
       reply,
       newStatus,
-      pushTitle:   `${emoji} Customer SMS Reply`,
-      pushBody:    `${emoji} অর্ডার #${order.externalId || order.id.slice(-6)} কাস্টমার ${reply === 'YES' ? 'কনফার্ম' : 'বাতিল'} করেছে`,
+      pushBody,
     });
 
     logger.info('calls: sms-webhook processed', {
