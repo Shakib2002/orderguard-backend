@@ -21,6 +21,7 @@ const ordersRoutes = require('./modules/orders/orders.routes');
 const tenantsRoutes = require('./modules/tenants/tenants.routes');
 const callsRoutes = require('./modules/calls/calls.routes');
 const emailRoutes = require('./modules/email/email.routes');
+const { startEmailPollingCron, stopEmailPollingCron } = require('./modules/email/gmailFetcher.service');
 
 // ── App ───────────────────────────────────────────────────────────────────────
 const app = express();
@@ -141,9 +142,13 @@ const startServer = async () => {
       logger.info(`   Health      : http://localhost:${config.port}/api/v1/health`);
     });
 
+    // ── Start Gmail polling cron ──────────────────────────────────────────────
+    startEmailPollingCron();
+
     // ── Graceful shutdown ─────────────────────────────────────────────────────
     const gracefulShutdown = async (signal) => {
       logger.info(`${signal} received — shutting down gracefully...`);
+      stopEmailPollingCron();
 
       server.close(async () => {
         await disconnectDatabase();

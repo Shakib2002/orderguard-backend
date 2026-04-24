@@ -4,43 +4,219 @@ const { getPrismaClient } = require('../../config/database');
 const { sendSuccess, sendCreated } = require('../../utils/response');
 const { AppError } = require('../../middlewares/error.middleware');
 const { HTTP } = require('../../config/constants');
-const { decrypt } = require('../../utils/crypto');
+const { encrypt, decrypt } = require('../../utils/crypto');
+const { testImapConnection } = require('./gmailFetcher.service');
+const { extractOrderFromEmail } = require('./orderParser.service');
 
-// ── List Email Configs ────────────────────────────────────────────────────────
+// ── EmailConfig — Save (upsert) ───────────────────────────────────────────────
 
 /**
- * GET /api/v1/email
- * Returns the email configuration and last check timestamp.
+ * POST /api/v1/email/config  [PROTECTED]
+ * Body: { gmailAddress, gmailAppPassword }
+ *
+ * 1. Encrypt app password with AES-256
+ * 2. Upsert into EmailConfig table
+ * 3. Test IMAP connection immediately
+ * 4. Return success/fail with connection status
  */
-const getEmailStatus = async (req, res, next) => {
+const saveEmailConfig = async (req, res, next) => {
   try {
     const prisma = getPrismaClient();
-    const config = await prisma.emailConfig.findUnique({
-      where: { tenantId: req.tenantId },
-      select: {
-        id: true, gmailAddress: true, lastCheckedAt: true, isActive: true,
+    const { gmailAddress, gmailAppPassword } = req.body;
+    const { tenantId } = req;
+
+    const encryptedPassword = encrypt(gmailAppPassword);
+
+    // Upsert config
+    const config = await prisma.emailConfig.upsert({
+      where: { tenantId },
+      create: {
+        tenantId,
+        gmailAddress,
+        gmailAppPassword: encryptedPassword,
+        isActive: false, // set true only after connection test passes
       },
+      update: {
+        gmailAddress,
+        gmailAppPassword: encryptedPassword,
+        isActive: false,
+      },
+      select: { id: true, gmailAddress: true, isActive: true, lastCheckedAt: true },
     });
 
-    return sendSuccess(res, {
-      data: config
-        ? { ...config, hasPassword: true }
-        : { hasPassword: false, isActive: false },
+    // Test IMAP connection immediately
+    let connectionOk = false;
+    let connectionError = null;
+
+    try {
+      await testImapConnection(gmailAddress, gmailAppPassword);
+      connectionOk = true;
+
+      // Mark active if connection succeeded
+      await prisma.emailConfig.update({
+        where: { tenantId },
+        data: { isActive: true },
+      });
+    } catch (err) {
+      connectionError = err.message;
+      // Keep isActive: false
+    }
+
+    return sendCreated(res, {
+      message: connectionOk
+        ? '✅ Gmail connected successfully! Polling will start within 2 minutes.'
+        : `⚠️ Config saved but IMAP connection failed: ${connectionError}`,
+      data: {
+        ...config,
+        isActive: connectionOk,
+        gmailAppPassword: '****', // never return raw password
+        connectionTest: connectionOk ? 'passed' : 'failed',
+        connectionError: connectionError || null,
+      },
     });
   } catch (err) {
     next(err);
   }
 };
 
-// ── Parse / Simulate Email Orders ────────────────────────────────────────────
+// ── EmailConfig — Get ─────────────────────────────────────────────────────────
 
 /**
- * POST /api/v1/email/parse
- * Manually trigger email parsing (dev/test — simulates receiving an order email).
- * In production, this would be triggered by a scheduled job or webhook.
- *
- * Expected body: { subject, body, from, messageId }
- * Returns the parsed order fields (does not auto-create the order).
+ * GET /api/v1/email/config  [PROTECTED]
+ * Returns config without the app password.
+ */
+const getEmailConfig = async (req, res, next) => {
+  try {
+    const prisma = getPrismaClient();
+    const config = await prisma.emailConfig.findUnique({
+      where: { tenantId: req.tenantId },
+      select: {
+        id: true,
+        gmailAddress: true,
+        lastCheckedAt: true,
+        isActive: true,
+      },
+    });
+
+    return sendSuccess(res, {
+      data: config
+        ? { ...config, gmailAppPassword: '****', hasConfig: true }
+        : { hasConfig: false, isActive: false },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── EmailConfig — Delete ──────────────────────────────────────────────────────
+
+/**
+ * DELETE /api/v1/email/config  [PROTECTED]
+ * Removes the EmailConfig and stops polling for this tenant.
+ */
+const deleteEmailConfig = async (req, res, next) => {
+  try {
+    const prisma = getPrismaClient();
+    const existing = await prisma.emailConfig.findUnique({
+      where: { tenantId: req.tenantId },
+    });
+    if (!existing) throw new AppError('No email configuration found.', HTTP.NOT_FOUND);
+
+    await prisma.emailConfig.delete({ where: { tenantId: req.tenantId } });
+
+    return sendSuccess(res, {
+      message: 'Email configuration removed. Gmail polling stopped.',
+      data: null,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── Test existing connection ───────────────────────────────────────────────────
+
+/**
+ * POST /api/v1/email/config/test  [PROTECTED]
+ * Re-test the saved IMAP connection without changing config.
+ */
+const testEmailConfig = async (req, res, next) => {
+  try {
+    const prisma = getPrismaClient();
+    const config = await prisma.emailConfig.findUnique({
+      where: { tenantId: req.tenantId },
+    });
+    if (!config) throw new AppError('No email configuration found. Please add one first.', HTTP.NOT_FOUND);
+
+    const appPassword = decrypt(config.gmailAppPassword);
+
+    try {
+      await testImapConnection(config.gmailAddress, appPassword);
+
+      await prisma.emailConfig.update({
+        where: { tenantId: req.tenantId },
+        data: { isActive: true },
+      });
+
+      return sendSuccess(res, {
+        message: '✅ IMAP connection test passed.',
+        data: { isActive: true, gmailAddress: config.gmailAddress },
+      });
+    } catch (err) {
+      await prisma.emailConfig.update({
+        where: { tenantId: req.tenantId },
+        data: { isActive: false },
+      });
+
+      return sendSuccess(res, {
+        message: `❌ IMAP connection test failed: ${err.message}`,
+        data: { isActive: false, gmailAddress: config.gmailAddress },
+      });
+    }
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── Raw Emails — list ─────────────────────────────────────────────────────────
+
+/**
+ * GET /api/v1/email/raw  [PROTECTED]
+ * Returns recent raw emails fetched for this tenant (paginated).
+ */
+const getRawEmails = async (req, res, next) => {
+  try {
+    const prisma = getPrismaClient();
+    const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
+    const limit = Math.min(50, parseInt(req.query.limit || '20', 10));
+    const skip  = (page - 1) * limit;
+
+    const [items, total] = await Promise.all([
+      prisma.rawEmail.findMany({
+        where: { tenantId: req.tenantId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        select: {
+          id: true, messageId: true, subject: true, fromAddress: true,
+          isParsed: true, processedAt: true, createdAt: true,
+        },
+      }),
+      prisma.rawEmail.count({ where: { tenantId: req.tenantId } }),
+    ]);
+
+    return sendSuccess(res, {
+      data: { items, total, page, limit, pages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── Parse email manually (dev/test) ──────────────────────────────────────────
+
+/**
+ * POST /api/v1/email/parse  [PROTECTED]
+ * Simulate receiving an order email — returns extracted order fields.
  */
 const parseEmail = async (req, res, next) => {
   try {
@@ -57,22 +233,17 @@ const parseEmail = async (req, res, next) => {
 
     return sendSuccess(res, {
       message: 'Email parsed successfully.',
-      data: {
-        ...parsed,
-        rawEmailId: messageId,
-        parseConfidence: parsed._confidence,
-      },
+      data: { ...parsed, rawEmailId: messageId, parseConfidence: parsed._confidence },
     });
   } catch (err) {
     next(err);
   }
 };
 
-// ── Ingest Parsed Email as Order ──────────────────────────────────────────────
+// ── Ingest email order (creates Order record) ─────────────────────────────────
 
 /**
- * POST /api/v1/email/ingest
- * Takes a fully parsed order payload and creates an Order record.
+ * POST /api/v1/email/ingest  [PROTECTED]
  */
 const ingestEmailOrder = async (req, res, next) => {
   try {
@@ -99,96 +270,22 @@ const ingestEmailOrder = async (req, res, next) => {
       },
     });
 
-    return sendCreated(res, {
-      message: 'Order created from email.',
-      data: order,
-    });
+    return sendCreated(res, { message: 'Order created from email.', data: order });
   } catch (err) {
     next(err);
   }
 };
 
-// ── Mark Email Config as Checked ─────────────────────────────────────────────
+// ── Status (legacy compat) ────────────────────────────────────────────────────
+const getEmailStatus = getEmailConfig;
 
-/**
- * PATCH /api/v1/email/last-checked
- * Update the lastCheckedAt timestamp (called by the polling job).
- */
-const markChecked = async (req, res, next) => {
-  try {
-    const prisma = getPrismaClient();
-    const config = await prisma.emailConfig.findUnique({
-      where: { tenantId: req.tenantId },
-    });
-    if (!config) throw new AppError('Email configuration not found.', HTTP.NOT_FOUND);
-
-    const updated = await prisma.emailConfig.update({
-      where: { tenantId: req.tenantId },
-      data: { lastCheckedAt: new Date() },
-      select: { id: true, lastCheckedAt: true },
-    });
-
-    return sendSuccess(res, { data: updated });
-  } catch (err) {
-    next(err);
-  }
+module.exports = {
+  saveEmailConfig,
+  getEmailConfig,
+  deleteEmailConfig,
+  testEmailConfig,
+  getRawEmails,
+  parseEmail,
+  ingestEmailOrder,
+  getEmailStatus,
 };
-
-// ── Email Parser Helper ───────────────────────────────────────────────────────
-
-/**
- * Rudimentary pattern-matching parser for common Bangladeshi e-commerce
- * order notification emails (Daraz, Chaldal, Pathao, etc.).
- *
- * Returns a structured order object or null if confidence is too low.
- * Extend this with ML/NLP as the product matures.
- *
- * @param {{ subject: string, body: string, from: string }} email
- * @returns {object|null}
- */
-const extractOrderFromEmail = ({ subject, body, from }) => {
-  const text = `${subject}\n${body}`;
-  let confidence = 0;
-  const result = {};
-
-  // Phone number
-  const phoneMatch = text.match(/(?:phone|mobile|contact|মোবাইল)[:\s]*(\+?880|0)?(1[3-9]\d{8})/i);
-  if (phoneMatch) {
-    result.customerPhone = `0${phoneMatch[2]}`;
-    confidence += 30;
-  }
-
-  // Customer name
-  const nameMatch = text.match(/(?:customer|name|নাম|গ্রাহক)[:\s]+([A-Za-zঀ-৿\s]{3,50})/i);
-  if (nameMatch) {
-    result.customerName = nameMatch[1].trim();
-    confidence += 20;
-  }
-
-  // Product name
-  const productMatch = text.match(/(?:product|item|পণ্য)[:\s]+([^\n]{3,100})/i);
-  if (productMatch) {
-    result.productName = productMatch[1].trim();
-    confidence += 20;
-  }
-
-  // Price
-  const priceMatch = text.match(/(?:total|amount|price|মূল্য|টাকা)[:\s]*(?:BDT|৳|Tk\.?)?\s*([\d,]+(?:\.\d{1,2})?)/i);
-  if (priceMatch) {
-    result.totalPrice = parseFloat(priceMatch[1].replace(/,/g, ''));
-    confidence += 20;
-  }
-
-  // Address
-  const addressMatch = text.match(/(?:address|ঠিকানা|delivery)[:\s]+([^\n]{5,200})/i);
-  if (addressMatch) {
-    result.address = addressMatch[1].trim();
-    confidence += 10;
-  }
-
-  result._confidence = confidence;
-
-  return confidence >= 50 ? result : null;
-};
-
-module.exports = { getEmailStatus, parseEmail, ingestEmailOrder, markChecked };

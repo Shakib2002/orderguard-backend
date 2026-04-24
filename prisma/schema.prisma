@@ -59,6 +59,7 @@ model Tenant {
   orders       Order[]
   calls        Call[]
   emailConfigs EmailConfig[]
+  rawEmails    RawEmail[]
 
   @@map("tenants")
 }
@@ -158,4 +159,25 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+// ── RawEmail — stores fetched Gmail messages for dedup & audit ───────────────
+model RawEmail {
+  id          String    @id @default(cuid())
+  tenantId    String
+  messageId   String    // Gmail Message-ID header (used for dedup)
+  subject     String
+  fromAddress String
+  bodyText    String?   @db.Text
+  bodyHtml    String?   @db.Text
+  processedAt DateTime?
+  isParsed    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, messageId]) // prevent double-processing
+  @@index([tenantId])
+  @@map("raw_emails")
 }

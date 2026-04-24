@@ -4,18 +4,55 @@ const express = require('express');
 const router = express.Router();
 const { body } = require('express-validator');
 
-const { getEmailStatus, parseEmail, ingestEmailOrder, markChecked } = require('./email.controller');
+const {
+  saveEmailConfig,
+  getEmailConfig,
+  deleteEmailConfig,
+  testEmailConfig,
+  getRawEmails,
+  parseEmail,
+  ingestEmailOrder,
+} = require('./email.controller');
+
 const { validate } = require('../../middlewares/validate.middleware');
 const { authenticate } = require('../../middlewares/auth.middleware');
 const { tenantScope } = require('../../middlewares/tenant.middleware');
 const { phoneField } = require('../../utils/validators');
 
+// All email routes require auth + tenant scope
 router.use(authenticate, tenantScope);
 
-router.get('/status', getEmailStatus);
-router.patch('/last-checked', markChecked);
+// ── Email Config ──────────────────────────────────────────────────────────────
 
-// Parse a raw email and return extracted order fields
+router.post(
+  '/config',
+  [
+    body('gmailAddress')
+      .isEmail().normalizeEmail()
+      .withMessage('Valid Gmail address required')
+      .custom((v) => v.endsWith('@gmail.com'))
+      .withMessage('Must be a Gmail address (@gmail.com)'),
+    body('gmailAppPassword')
+      .notEmpty().withMessage('Gmail App Password is required')
+      .isLength({ min: 16, max: 19 })
+      .withMessage('Gmail App Password must be 16 characters (spaces allowed)'),
+  ],
+  validate,
+  saveEmailConfig
+);
+
+router.get('/config', getEmailConfig);
+
+router.delete('/config', deleteEmailConfig);
+
+router.post('/config/test', testEmailConfig);
+
+// ── Raw Emails ────────────────────────────────────────────────────────────────
+
+router.get('/raw', getRawEmails);
+
+// ── Manual Parse / Ingest (dev + integration) ─────────────────────────────────
+
 router.post(
   '/parse',
   [
@@ -28,7 +65,6 @@ router.post(
   parseEmail
 );
 
-// Ingest a parsed order from email (creates an Order record)
 router.post(
   '/ingest',
   [
