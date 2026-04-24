@@ -1,8 +1,8 @@
 'use strict';
 
 const Joi = require('joi');
-const { sendError } = require('../utils/response');
-const { HTTP } = require('../config/constants');
+const { sendError } = require('../../utils/response');
+const { HTTP } = require('../../config/constants');
 
 // ── Bangladesh phone regex ────────────────────────────────────────────────────
 // Matches: 01XXXXXXXXX (11 digits, operator prefix 3–9)
