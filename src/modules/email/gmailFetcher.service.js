@@ -21,7 +21,7 @@ const cron = require('node-cron');
 const { getPrismaClient } = require('../../config/database');
 const { decrypt } = require('../../utils/crypto');
 const logger = require('../../utils/logger');
-const { extractOrderFromEmail, isOrderEmail } = require('./orderParser.service');
+const { orderParser, isOrderEmail } = require('./orderParser.service');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -244,55 +244,29 @@ const pollTenant = async (emailConfig) => {
         },
       });
 
-      // 4. Parse order from email content
-      const parsed = extractOrderFromEmail({
-        subject: msg.subject,
-        body: msg.bodyText,
-        from: msg.fromAddress,
+      // 4. Parse + create order via OrderParserService
+      const parsed = await orderParser.parse({
+        subject:     msg.subject,
+        bodyText:    msg.bodyText,
+        bodyHtml:    msg.bodyHtml,
+        fromAddress: msg.fromAddress,
       });
 
-      if (parsed) {
-        // 5. Create order
-        try {
-          await prisma.$transaction([
-            prisma.order.create({
-              data: {
-                tenantId,
-                externalId: parsed.externalId || null,
-                customerName: parsed.customerName || 'Unknown Customer',
-                customerPhone: parsed.customerPhone || '01000000000',
-                address: parsed.address || null,
-                productName: parsed.productName || msg.subject,
-                quantity: parsed.quantity || 1,
-                totalPrice: parsed.totalPrice || 0,
-                rawEmailId: rawEmail.id,
-                notes: `Auto-created from email. Confidence: ${parsed._confidence}%`,
-                status: 'PENDING',
-                callStatus: 'NOT_CALLED',
-              },
-            }),
-            prisma.rawEmail.update({
-              where: { id: rawEmail.id },
-              data: { isParsed: true, processedAt: new Date() },
-            }),
-          ]);
+      const order = await orderParser.createOrderFromParsed(parsed, {
+        prisma,
+        tenantId,
+        rawEmailId: rawEmail.id,
+        subject:    msg.subject,
+      });
 
-          logger.info('gmailFetcher: order created from email', {
-            tenantId,
-            subject: msg.subject,
-            confidence: parsed._confidence,
-          });
-        } catch (orderErr) {
-          logger.error('gmailFetcher: failed to create order', {
-            tenantId,
-            rawEmailId: rawEmail.id,
-            error: orderErr.message,
-          });
-        }
+      if (order) {
+        await prisma.rawEmail.update({
+          where: { id: rawEmail.id },
+          data: { isParsed: true, processedAt: new Date() },
+        });
       } else {
-        logger.info('gmailFetcher: email not parsed (low confidence)', {
-          tenantId,
-          subject: msg.subject,
+        logger.info('gmailFetcher: email stored but order not created (low confidence)', {
+          tenantId, subject: msg.subject,
         });
       }
 
